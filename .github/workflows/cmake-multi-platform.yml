@@ -47,6 +47,23 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install Boost (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libboost-all-dev
+
+    - name: Install Boost (macOS)
+      if: runner.os == 'macOS'
+      run: brew install boost
+      
+    - name: Install Boost (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        git clone https://github.com/Microsoft/vcpkg.git
+        .\vcpkg\bootstrap-vcpkg.bat
+        .\vcpkg\vcpkg install boost
+
     - name: Set reusable strings
       # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
       id: strings
