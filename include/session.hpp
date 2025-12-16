@@ -39,6 +39,8 @@ public:
         handle_ssl_negotiation();
     }
 
+    static boost::asio::io_context &get_io_context();
+
 private:
     void parse_startup_params(const char *data, size_t length);
     void handle_ssl_negotiation();
