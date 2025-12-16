@@ -59,8 +59,8 @@ int main(int argc, char *argv[])
 		po::options_description desc("options");
 		desc.add_options()
 			("help,h", "show help message")
-			("port,p", po::value<int>(), "server listen port")
-			("log,l", po::value<std::string>(), "server log level");
+			("port,p", po::value<int>(), "server listen port, default is 5432")
+			("log,l", po::value<std::string>(), "server log level: {TRACE, DEBUG, INFO, WARNING, ERROR, FATAL}");
 
 		po::variables_map vm;
 		po::store(po::parse_command_line(argc, argv, desc), vm);
