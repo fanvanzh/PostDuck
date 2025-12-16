@@ -3,6 +3,8 @@
 
 Make DuckDB run as Postgresql-Server
 
+![screenshot](./image.png)
+
 ## Features
 
 Compatible with PG tools:
