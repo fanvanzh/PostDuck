@@ -13,6 +13,7 @@
 
 using boost::asio::ip::tcp;
 static boost::asio::thread_pool thread_pool_(4); // 4 threads in the pool
+static std::string datadir = ".";
 
 std::unordered_map<std::string, uint32_t> duckdb_to_pg_type = {
     {"BOOLEAN", 16},     // PG: bool
@@ -31,6 +32,15 @@ std::unordered_map<std::string, uint32_t> duckdb_to_pg_type = {
     {"DECIMAL", 1700},   // PG: numeric
     // 添加更多类型映射...
 };
+
+void set_data_directory(const std::string &dir)
+{
+    datadir = dir;
+    if (datadir.back() == '/')
+    {
+        datadir.pop_back();
+    }
+}
 
 boost::asio::io_context &
 PGSession::get_io_context()
@@ -127,7 +137,7 @@ void PGSession::send_auth_ok()
     asio::write(socket_, asio::buffer(backend_key));
 
     // 加载默认数据库
-    std::string query = "ATTACH '" + startup_params_["database"] + ".db';";
+    std::string query = "ATTACH '" + datadir + "/" + startup_params_["database"] + ".db';";
     connection_->Query(query);
     query = "USE " + startup_params_["database"] + ";";
     connection_->Query(query);

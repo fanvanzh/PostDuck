@@ -63,4 +63,6 @@ private:
     /* explain */
     void process_explain(duckdb::unique_ptr<duckdb::MaterializedQueryResult> &result);
 };
+
+void set_data_directory(const std::string &dir);
 #endif // SESSION_HPP

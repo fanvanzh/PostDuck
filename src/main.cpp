@@ -60,6 +60,7 @@ int main(int argc, char *argv[])
 		desc.add_options()
 			("help,h", "show help message")
 			("port,p", po::value<int>(), "server listen port, default is 5432")
+			("data,d", po::value<std::string>(), "database dir path, default is .")
 			("log,l", po::value<std::string>(), "server log level: {TRACE, DEBUG, INFO, WARNING, ERROR, FATAL}");
 
 		po::variables_map vm;
@@ -75,6 +76,12 @@ int main(int argc, char *argv[])
 		if (vm.count("port"))
 		{
 			port = vm["port"].as<int>();
+		}
+
+		if (vm.count("data"))
+		{
+			std::string dir = vm["data"].as<std::string>();
+			set_data_directory(dir);
 		}
 
 		if (vm.count("log"))
