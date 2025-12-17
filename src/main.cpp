@@ -103,9 +103,8 @@ int main(int argc, char *argv[])
 		}
 		PINFO << "Start on port " << port;
 
-		boost::asio::io_context io_context;
-		Server server(io_context, port);
-		io_context.run();
+		Server server(PGSession::get_io_context(), port);
+		PGSession::get_io_context().run();
 	}
 	catch (std::exception &e)
 	{
