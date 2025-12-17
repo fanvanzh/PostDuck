@@ -5,20 +5,24 @@ Make DuckDB run as Postgresql-Server
 
 ![screenshot](./image.png)
 
-## Features
+## Feature RoadMap
+Postgresql protocal:
+- [x] Simple Query
+- [ ] Query Cancel
+- [ ] Prepare Stmt
+- [ ] Binary Result
 
 Compatible with PG tools:
-- psql
-- pgbench
-- pg_dump
-- pg_restore
+- [x] psql
+- [x] pgbench
+- [ ] pg_dump
+- [ ] pg_restore
 
 Compatible with PG drivers:
-- pgx
-- psycopg2
-- libpq/libpqxx
-- PostgreSQL JDBC Driver
-
+- [ ] pgx
+- [ ] psycopg2
+- [ ] libpq/libpqxx
+- [ ] PostgreSQL JDBC Driver
 
 ## Build and run
 ### Install Boost Library
