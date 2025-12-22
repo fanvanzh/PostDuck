@@ -29,10 +29,20 @@ class PGSession : public std::enable_shared_from_this<PGSession>
     std::vector<char> query_;
     std::shared_ptr<duckdb::Connection> connection_;
     std::map<std::string, std::string> startup_params_;
+    uint32_t backend_pid_ = 0;
+    uint32_t backend_secret_ = 0;
 
 public:
     PGSession(tcp::socket socket, std::shared_ptr<duckdb::Connection> conn)
         : socket_(std::move(socket)), connection_(conn) {}
+
+    ~PGSession();
+
+    // Called when a CancelRequest targets this session
+    void Cancel();
+
+    // Send an SQL error response to the client (SQLSTATE default is '57014')
+    void send_error(const std::string &message, const std::string &sqlstate = "57014");
 
     void start()
     {

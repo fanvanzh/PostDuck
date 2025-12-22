@@ -4,6 +4,12 @@
 #include <boost/asio.hpp>
 #include <boost/bind/bind.hpp>
 
+#include <unordered_map>
+#include <mutex>
+#include <atomic>
+#include <random>
+#include <unistd.h>
+
 #include "session.hpp"
 #include "log.hpp"
 #include "db.hpp"
@@ -14,6 +20,12 @@
 using boost::asio::ip::tcp;
 static boost::asio::thread_pool thread_pool_(4); // 4 threads in the pool
 static std::string datadir = ".";
+
+// Global registry for backend pid -> session mapping (for CancelRequest handling)
+static std::mutex sessions_mtx;
+static std::unordered_map<uint32_t, std::weak_ptr<class PGSession>> sessions_map;
+static std::unordered_map<uint32_t, uint32_t> sessions_secret;
+static std::atomic<uint32_t> next_backend_pid {1};
 
 std::unordered_map<std::string, uint32_t> duckdb_to_pg_type = {
     {"BOOLEAN", 16},     // PG: bool
@@ -83,11 +95,51 @@ void PGSession::handle_ssl_negotiation()
                      {
                          if (!ec)
                          {
-                             // 拒绝SSL或非SSL连接
-                             if (memcmp(self->data_ + 4, "\x04\xD2\x16\x2F", 4) == 0)
-                                 asio::write(self->socket_, asio::buffer("N", 1));
+                            // SSLRequest code = 0x04D2162F
+                            if (memcmp(self->data_ + 4, "\x04\xD2\x16\x2F", 4) == 0) {
+                                asio::write(self->socket_, asio::buffer("N", 1));
+                                self->handle_startup();
+                                return;
+                            }
 
-                             self->handle_startup();
+                            // CancelRequest code = 0x04D2162E (special short connection used by libpq/psql)
+                            if (memcmp(self->data_ + 4, "\x04\xD2\x16\x2E", 4) == 0) {
+                                // need to read remaining 8 bytes (pid + secret)
+                                asio::async_read(self->socket_, asio::buffer(self->data_, 8),
+                                                 [self](boost::system::error_code ec2, size_t)
+                                                 {
+                                                     if (!ec2)
+                                                     {
+                                                         uint32_t pid = ntohl(*reinterpret_cast<uint32_t *>(self->data_));
+                                                         uint32_t secret = ntohl(*reinterpret_cast<uint32_t *>(self->data_ + 4));
+                                                         // lookup session and trigger cancel
+                                                         std::lock_guard<std::mutex> lg(sessions_mtx);
+                                                         auto it = sessions_map.find(pid);
+                                                         if (it != sessions_map.end())
+                                                         {
+                                                             if (!it->second.expired())
+                                                             {
+                                                                 auto tgt = it->second.lock();
+                                                                 auto s_it = sessions_secret.find(pid);
+                                                                 if (s_it != sessions_secret.end() && s_it->second == secret)
+                                                                 {
+                                                                     PINFO << "Received CancelRequest for pid=" << pid;
+                                                                     tgt->Cancel();
+                                                                 }
+                                                                 else
+                                                                 {
+                                                                     PDEBUG << "CancelRequest secret mismatch for pid=" << pid;
+                                                                 }
+                                                             }
+                                                         }
+                                                     }
+                                                     // close cancel connection by returning; session will be destroyed
+                                                 });
+                                return;
+                            }
+
+                            // Otherwise treat as normal startup
+                            self->handle_startup();
                          }
                      });
 }
@@ -132,8 +184,26 @@ void PGSession::send_auth_ok()
     send_parameter_status("client_encoding", "UTF8");
     send_parameter_status("DateStyle", "ISO");
 
-    // 发送BackendKeyData（简化版）
-    std::vector<char> backend_key = {'K', 0, 0, 0, 12, 0, 0, 0, 1, 0, 0, 0, 2};
+    // 发送BackendKeyData（包含可用于 CancelRequest 的 pid 和 secret）
+    // 生成 backend pid 和 secret 并注册会话
+    backend_pid_ = next_backend_pid.fetch_add(1);
+    // random secret
+    std::random_device rd;
+    backend_secret_ = static_cast<uint32_t>(rd());
+    {
+        std::lock_guard<std::mutex> lg(sessions_mtx);
+        sessions_map[backend_pid_] = shared_from_this();
+        sessions_secret[backend_pid_] = backend_secret_;
+    }
+    // 构造 BackendKeyData: 'K' | int32 len | int32 pid | int32 secret
+    std::vector<char> backend_key;
+    backend_key.push_back('K');
+    uint32_t len = htonl(12);
+    backend_key.insert(backend_key.end(), reinterpret_cast<char *>(&len), reinterpret_cast<char *>(&len) + 4);
+    uint32_t net_pid = htonl(backend_pid_);
+    backend_key.insert(backend_key.end(), reinterpret_cast<char *>(&net_pid), reinterpret_cast<char *>(&net_pid) + 4);
+    uint32_t net_secret = htonl(backend_secret_);
+    backend_key.insert(backend_key.end(), reinterpret_cast<char *>(&net_secret), reinterpret_cast<char *>(&net_secret) + 4);
     asio::write(socket_, asio::buffer(backend_key));
 
     // 加载默认数据库
@@ -544,4 +614,63 @@ void PGSession::send_ready_for_query()
                           std::vector<char> ready = {'Z', 0, 0, 0, 5, 'I'};
                           asio::write(self->socket_, asio::buffer(ready));
                       });
+}
+
+PGSession::~PGSession()
+{
+    // unregister session if registered
+    if (backend_pid_ != 0)
+    {
+        std::lock_guard<std::mutex> lg(sessions_mtx);
+        sessions_map.erase(backend_pid_);
+        sessions_secret.erase(backend_pid_);
+    }
+}
+
+void PGSession::Cancel()
+{
+    PINFO << "Cancelling session pid=" << backend_pid_;
+    try
+    {
+        // Notify DuckDB to interrupt current execution
+        if (connection_)
+            connection_->Interrupt();
+
+        // Send client-facing error about cancellation
+        send_error("canceling statement due to user request", "57014");
+    }
+    catch (std::exception &e)
+    {
+        PERROR << "Error while cancelling session: " << e.what();
+    }
+}
+
+void PGSession::send_error(const std::string &message, const std::string &sqlstate)
+{
+    // Construct a minimal ErrorResponse: fields S (severity), C (sqlstate), M (message), terminated by '\0'
+    std::vector<char> body;
+    // Severity
+    body.push_back('S');
+    body.insert(body.end(), {'E','R','R','O','R','\0'});
+    // SQLSTATE code
+    body.push_back('C');
+    body.insert(body.end(), sqlstate.begin(), sqlstate.end());
+    body.push_back('\0');
+    // Message
+    body.push_back('M');
+    body.insert(body.end(), message.begin(), message.end());
+    body.push_back('\0');
+    // terminator
+    body.push_back('\0');
+
+    uint32_t len = 4 + body.size();
+    uint32_t net_len = htonl(len);
+    std::vector<char> msg;
+    msg.push_back('E');
+    msg.insert(msg.end(), reinterpret_cast<char *>(&net_len), reinterpret_cast<char *>(&net_len) + 4);
+    msg.insert(msg.end(), body.begin(), body.end());
+
+    boost::asio::post(get_io_context(), [self = shared_from_this(), msg]() {
+        asio::write(self->socket_, asio::buffer(msg));
+    });
 }
