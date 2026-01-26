@@ -1,6 +1,7 @@
 #ifndef SESSION_HPP
 #define SESSION_HPP
 #include <boost/asio.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <vector>
 #include <map>
 #include <string>
@@ -75,4 +76,10 @@ private:
 };
 
 void set_data_directory(const std::string &dir);
+
+// Thread pool management functions
+void init_thread_pool(size_t thread_count);
+boost::asio::thread_pool& get_thread_pool();
+void cleanup_thread_pool();
+
 #endif // SESSION_HPP

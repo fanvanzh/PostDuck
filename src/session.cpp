@@ -18,7 +18,7 @@
 #include <set>
 
 using boost::asio::ip::tcp;
-static boost::asio::thread_pool thread_pool_(4); // 4 threads in the pool
+static boost::asio::thread_pool *thread_pool_ptr = nullptr; // Pointer to thread pool instance
 static std::string datadir = ".";
 
 // Global registry for backend pid -> session mapping (for CancelRequest handling)
@@ -27,7 +27,10 @@ static std::unordered_map<uint32_t, std::weak_ptr<class PGSession>> sessions_map
 static std::unordered_map<uint32_t, uint32_t> sessions_secret;
 static std::atomic<uint32_t> next_backend_pid {1};
 
-std::unordered_map<std::string, uint32_t> duckdb_to_pg_type = {
+
+// 为全局映射表添加互斥锁保护并发访问
+static std::mutex duckdb_to_pg_type_mutex;
+static std::unordered_map<std::string, uint32_t> duckdb_to_pg_type = {
     {"BOOLEAN", 16},     // PG: bool
     {"TINYINT", 21},     // PG: int2
     {"SMALLINT", 21},    // PG: int2
@@ -44,6 +47,30 @@ std::unordered_map<std::string, uint32_t> duckdb_to_pg_type = {
     {"DECIMAL", 1700},   // PG: numeric
     // 添加更多类型映射...
 };
+
+void init_thread_pool(size_t thread_count) {
+    if (thread_pool_ptr != nullptr) {
+        thread_pool_ptr->join();  // Wait for all pending work to complete
+        delete thread_pool_ptr;
+    }
+    thread_pool_ptr = new boost::asio::thread_pool(thread_count);
+}
+
+boost::asio::thread_pool& get_thread_pool() {
+    if (thread_pool_ptr == nullptr) {
+        // Default initialization if not explicitly initialized
+        thread_pool_ptr = new boost::asio::thread_pool(4);
+    }
+    return *thread_pool_ptr;
+}
+
+void cleanup_thread_pool() {
+    if (thread_pool_ptr != nullptr) {
+        thread_pool_ptr->join();
+        delete thread_pool_ptr;
+        thread_pool_ptr = nullptr;
+    }
+}
 
 void set_data_directory(const std::string &dir)
 {
@@ -285,7 +312,7 @@ void PGSession::handle_simple_query()
                                                   if (!ec)
                                                   {
                                                       // 处理查询并返回结果
-                                                      boost::asio::post(thread_pool_,
+                                                      boost::asio::post(get_thread_pool(),
                                                                         [self]()
                                                                         {
                                                                             self->process_query();
@@ -470,7 +497,16 @@ void PGSession::process_query()
     send_ready_for_query();
 }
 
-// 发送行描述
+uint32_t get_pg_type_oid(const std::string& duckdb_type) {
+    std::lock_guard<std::mutex> lock(duckdb_to_pg_type_mutex);
+    auto it = duckdb_to_pg_type.find(duckdb_type);
+    if (it != duckdb_to_pg_type.end()) {
+        return it->second;
+    }
+    // 如果找不到对应类型，默认返回 VARCHAR 类型
+    return duckdb_to_pg_type.at("VARCHAR");
+}
+
 void PGSession::send_row_description(const std::vector<ColumnDesc> &columns)
 {
     std::vector<uint8_t> msg;
@@ -508,7 +544,8 @@ void PGSession::send_row_description(const std::vector<ColumnDesc> &columns)
                    reinterpret_cast<uint8_t *>(&col_num) + 2);
 
         // 类型OID(4字节)
-        uint32_t type_oid = htonl(duckdb_to_pg_type.at(col.duckdb_type));
+        // 使用线程安全的函数获取类型OID
+        uint32_t type_oid = htonl(get_pg_type_oid(col.duckdb_type));
         msg.insert(msg.end(),
                    reinterpret_cast<uint8_t *>(&type_oid),
                    reinterpret_cast<uint8_t *>(&type_oid) + 4);
@@ -539,7 +576,7 @@ void PGSession::send_row_description(const std::vector<ColumnDesc> &columns)
               reinterpret_cast<uint8_t *>(&net_len) + 4,
               msg.begin() + len_pos);
 
-    boost::asio::post(get_io_context(), [self = shared_from_this(), msg]()
+    boost::asio::post(get_thread_pool(), [self = shared_from_this(), msg]()
                       { asio::write(self->socket_, asio::buffer(msg)); });
 }
 
@@ -576,7 +613,7 @@ void PGSession::send_data_row(const std::vector<std::string> &values)
         msg.insert(msg.end(), val.begin(), val.end());
     }
 
-    boost::asio::post(get_io_context(),
+    boost::asio::post(get_thread_pool(),
                       [self = shared_from_this(), msg]()
                       {
                           asio::write(self->socket_, asio::buffer(msg));
@@ -598,7 +635,7 @@ void PGSession::send_command_complete(const std::string &tag)
     msg.insert(msg.end(), tag.begin(), tag.end());
     msg.push_back('\0');
 
-    boost::asio::post(get_io_context(),
+    boost::asio::post(get_thread_pool(),
                       [self = shared_from_this(), msg]()
                       {
                           asio::write(self->socket_, asio::buffer(msg));
@@ -608,7 +645,7 @@ void PGSession::send_command_complete(const std::string &tag)
 // 发送ReadyForQuery
 void PGSession::send_ready_for_query()
 {
-    boost::asio::post(get_io_context(),
+    boost::asio::post(get_thread_pool(),
                       [self = shared_from_this()]()
                       {
                           std::vector<char> ready = {'Z', 0, 0, 0, 5, 'I'};
@@ -670,7 +707,7 @@ void PGSession::send_error(const std::string &message, const std::string &sqlsta
     msg.insert(msg.end(), reinterpret_cast<char *>(&net_len), reinterpret_cast<char *>(&net_len) + 4);
     msg.insert(msg.end(), body.begin(), body.end());
 
-    boost::asio::post(get_io_context(), [self = shared_from_this(), msg]() {
+    boost::asio::post(get_thread_pool(), [self = shared_from_this(), msg]() {
         asio::write(self->socket_, asio::buffer(msg));
     });
 }

@@ -8,7 +8,7 @@ Make DuckDB run as Postgresql-Server
 ## Feature RoadMap
 Postgresql protocal:
 - [x] Simple Query
-- [ ] Query Cancel
+- [x] Query Cancel
 - [ ] Prepare Stmt
 - [ ] Binary Result
 

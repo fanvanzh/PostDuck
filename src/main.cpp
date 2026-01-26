@@ -56,10 +56,12 @@ int main(int argc, char *argv[])
 	try
 	{
 		int port = 5432;
+		int thread_count = 4;  // 默认线程数为4
 		po::options_description desc("options");
 		desc.add_options()
 			("help,h", "show help message")
 			("port,p", po::value<int>(), "server listen port, default is 5432")
+			("thread,t", po::value<int>(), "thread pool size, default is 4")
 			("data,d", po::value<std::string>(), "database dir path, default is .")
 			("log,l", po::value<std::string>(), "server log level: {TRACE, DEBUG, INFO, WARNING, ERROR, FATAL}");
 
@@ -76,6 +78,15 @@ int main(int argc, char *argv[])
 		if (vm.count("port"))
 		{
 			port = vm["port"].as<int>();
+		}
+
+		if (vm.count("thread"))
+		{
+			thread_count = vm["thread"].as<int>();
+			if (thread_count <= 0) {
+				std::cerr << "Thread count must be greater than 0" << std::endl;
+				return 1;
+			}
 		}
 
 		if (vm.count("data"))
@@ -108,14 +119,22 @@ int main(int argc, char *argv[])
 				return 1;
 			}
 		}
+		
+		PINFO << "Initializing thread pool with " << thread_count << " threads";
+		init_thread_pool(thread_count);
 		PINFO << "Start on port " << port;
 
 		Server server(PGSession::get_io_context(), port);
 		PGSession::get_io_context().run();
+		
+		// 清理线程池资源
+		cleanup_thread_pool();
 	}
 	catch (std::exception &e)
 	{
 		PFATAL << "Exception: " << e.what();
+		// 清理线程池资源
+		cleanup_thread_pool();
 	}
 
 	return 0;
