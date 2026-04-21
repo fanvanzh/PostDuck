@@ -84,6 +84,19 @@ make -j 16
 are created on first connection. `<dbname>` comes from the client's startup
 packet (`-d` in `psql`, `database=` in JDBC, …).
 
+### Tests
+
+Integration tests live under [`test/`](./test). They start a real `postduck`
+binary, connect with `psycopg2`, and exercise the wire protocol end-to-end.
+
+```bash
+pip install -r test/requirements.txt
+# rebuild first, then:
+./test/run_tests.sh -v         # or: pytest -v test/
+```
+
+See [`test/README.md`](./test/README.md) for details.
+
 ### Try it out
 ```
 # psql

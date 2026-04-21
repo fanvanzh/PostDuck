@@ -577,8 +577,21 @@ void PGSession::handle_simple_query(const std::string &raw_query)
         }
 
         duckdb::StatementType stmt_type = cur->statement_type;
-        bool is_select = (stmt_type == duckdb::StatementType::SELECT_STATEMENT) ||
-                         (stmt_type == duckdb::StatementType::EXPLAIN_STATEMENT);
+        // Only SELECT/EXPLAIN (and EXECUTE of a prepared SELECT) stream rows to
+        // the client. Everything else — DDL, DML, transaction control, SET,
+        // PRAGMA — just emits a CommandComplete tag. DuckDB surfaces a 1-column
+        // "Success"/"Count" result for many of these; we must not forward it as
+        // a RowDescription or libpq will think the statement returned tuples.
+        bool is_result_producing =
+            (stmt_type == duckdb::StatementType::SELECT_STATEMENT) ||
+            (stmt_type == duckdb::StatementType::EXPLAIN_STATEMENT) ||
+            (stmt_type == duckdb::StatementType::EXECUTE_STATEMENT) ||
+            (stmt_type == duckdb::StatementType::CALL_STATEMENT);
+        bool is_dml = (stmt_type == duckdb::StatementType::INSERT_STATEMENT) ||
+                      (stmt_type == duckdb::StatementType::UPDATE_STATEMENT) ||
+                      (stmt_type == duckdb::StatementType::DELETE_STATEMENT) ||
+                      (stmt_type == duckdb::StatementType::COPY_STATEMENT);
+        bool is_select = is_result_producing;
 
         std::vector<ColumnDesc> cols;
         for (idx_t i = 0; i < cur->ColumnCount(); i++)
@@ -1281,8 +1294,11 @@ void PGSession::handle_execute(const std::vector<char> &body)
         }
     }
 
-    bool is_select = (stmt_type == duckdb::StatementType::SELECT_STATEMENT) ||
-                     (stmt_type == duckdb::StatementType::EXPLAIN_STATEMENT);
+    bool is_select =
+        (stmt_type == duckdb::StatementType::SELECT_STATEMENT) ||
+        (stmt_type == duckdb::StatementType::EXPLAIN_STATEMENT) ||
+        (stmt_type == duckdb::StatementType::EXECUTE_STATEMENT) ||
+        (stmt_type == duckdb::StatementType::CALL_STATEMENT);
 
     idx_t row_count = 0;
     if (is_select)
@@ -1645,6 +1661,11 @@ std::string PGSession::statement_tag_for(duckdb::StatementType t, idx_t row_coun
         return "SET";
     case duckdb::StatementType::PRAGMA_STATEMENT:
         return "PRAGMA";
+    case duckdb::StatementType::PREPARE_STATEMENT:
+        return "PREPARE";
+    case duckdb::StatementType::EXECUTE_STATEMENT:
+        // EXECUTE wraps an underlying statement; report SELECT n for SELECT bodies.
+        return "SELECT " + std::to_string(row_count);
     default:
         return "OK";
     }
